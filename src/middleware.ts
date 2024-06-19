@@ -1,89 +1,195 @@
-import { NextResponse, type NextRequest } from "next/server";
 import { createMiddlewareClient } from "@supabase/auth-helpers-nextjs";
-
+import { NextResponse, type NextRequest } from "next/server";
 import { checkUserDetails } from "./utils/functions/checkUserDetails";
+import { Database } from "./utils/supabase";
 
-export async function middleware(request: NextRequest) {
+export async function middleware(req: NextRequest) {
   const res = NextResponse.next();
-
-  const supabase = createMiddlewareClient({ req: request, res });
-
+  const supabase = createMiddlewareClient<Database>({ req, res });
   const {
     data: { session },
   } = await supabase.auth.getSession();
-
-  const url = new URL(request.url);
-
-  // case: user is trying to access a protected page without logging in
-  // redirect to landing page
+  const url = new URL(req.nextUrl);
   if (!session) {
     if (
+      url.pathname.startsWith("/admin-dashboard") ||
+      url.pathname.startsWith("/profile") ||
       url.pathname.startsWith("/dashboard") ||
-      url.pathname === "/profile" ||
-      url.pathname === "/event-management" ||
-      url.pathname === "/role-management" ||
-      url.pathname === "/admin-dashboard" ||
-      url.pathname.startsWith("/coordinator-dashboard")
-
+      url.pathname.startsWith("/coordinator-dashboard") ||
+      url.pathname.startsWith("/entry")
     ) {
-      return NextResponse.redirect(new URL("/", request.url));
+      return NextResponse.redirect(new URL("/", req.url));
     }
   }
-  // case: user is logged in
-  // check if user has completed profile
-  // if not, redirect to profile page
-  else {
+  if (session) {
     const userDetails = await supabase
       .from("users")
       .select()
       .eq("id", session?.user.id);
 
-    // if user is already in the profile page, dont redirect again
-    if (
-      !checkUserDetails(userDetails?.data?.[0]) &&
-      url.pathname !== "/profile"
-    ) {
-      return NextResponse.redirect(new URL("/profile", request.url));
-    }
+    const userRoles: any = await supabase
+      .from("roles")
+      .select(
+        "role,event_id,events(event_name,fest_name,year),event_categories(fest_name,year)",
+      )
+      .eq("id", session?.user.id);
 
-    if (
-      url.pathname === "/role-management" ||
-      url.pathname === "/admin-dashboard"
-    ) {
-      const userRoles = await supabase
-        .from("roles")
-        .select("role")
-        .eq("id", session?.user.id);
-
-      if (!userRoles?.data?.[0]?.role?.includes("super_admin")) {
-        return NextResponse.redirect(
-          new URL("/?error=permission_error", request.url),
-        );
+    let superAdmin = false;
+    let eventCoordinator = false;
+    let volunteer = false;
+    let convenor = false;
+    let registrar = false;
+    let security = false;
+    let securityAdmin = false;
+    if (userRoles && userRoles.data) {
+      for (const obj of userRoles.data) {
+        if (obj.role === "super_admin") {
+          superAdmin = true;
+        } else if (obj.role === "event_coordinator") {
+          if (
+            obj.events &&
+            obj.events.fest_name === "Game of Thrones" &&
+            obj.events.year == 2024
+          ) {
+            eventCoordinator = true;
+          }
+        } else if (obj.role === "volunteer") {
+          if (
+            obj.events &&
+            obj.events.fest_name === "Game of Thrones" &&
+            obj.events.year == 2024
+          ) {
+            volunteer = true;
+          }
+        } else if (obj.role === "convenor") {
+          if (
+            obj.event_categories &&
+            obj.event_categories.fest_name === "Game of Thrones" &&
+            obj.event_categories.year == 2024
+          ) {
+            convenor = true;
+          }
+        } else if (obj.role === "registrar") {
+          registrar = true;
+        } else if (obj.role === "security_admin") {
+          securityAdmin = true;
+        } else if (obj.role === "security") {
+          security = true;
+        }
       }
     }
 
-    if (url.pathname === "/coordinator-dashboard") {
-      const userRoles = await supabase
-        .from("roles")
-        .select()
-        .eq("id", session?.user.id);
-
+    if (superAdmin && url.pathname.startsWith("/registrar")) {
+      return NextResponse.next();
+    }
+    if (registrar && url.pathname.startsWith("/registrar")) {
+      return NextResponse.next();
+    }
+    if (eventCoordinator && url.pathname.startsWith("/registrar")) {
+      return NextResponse.next();
+    }
+    if (convenor && url.pathname.startsWith("/registrar")) {
+      return NextResponse.next();
+    }
+    if (
+      (security || superAdmin || securityAdmin) &&
+      url.pathname.startsWith("/entry")
+    ) {
       if (
-        !userRoles?.data?.[0]?.role?.includes("event_coordinator") &&
-        !userRoles?.data?.[0]?.role?.includes("super_admin")
+        !superAdmin &&
+        !securityAdmin &&
+        url.pathname.startsWith("/entry/add")
       ) {
-        return NextResponse.redirect(
-          new URL("/?error=permission_error", request.url),
-        );
+        return NextResponse.redirect(new URL("/entry", req.url));
       }
-
       return NextResponse.next();
     }
 
-    // TODO: implement event management page
+    if (
+      (!security || !superAdmin || !securityAdmin) &&
+      url.pathname.startsWith("/entry")
+    ) {
+      return NextResponse.redirect(new URL("/", req.url));
+    }
+
+    if (
+      (!superAdmin ||
+        !registrar ||
+        !convenor ||
+        !eventCoordinator ||
+        !volunteer) &&
+      url.pathname.startsWith("/registrar")
+    ) {
+      return NextResponse.redirect(new URL("/", req.url));
+    }
+
+    if (
+      !checkUserDetails(userDetails?.data?.[0]!) &&
+      url.pathname !== "/profile"
+    ) {
+      return NextResponse.redirect(new URL("/profile", req.url));
+    }
+
+    if (
+      superAdmin &&
+      url.pathname.startsWith("/admin-dashboard" || "/coordinator-dashboard")
+    ) {
+      return NextResponse.next();
+    }
+
+    if (
+      !superAdmin &&
+      url.pathname.startsWith(
+        "/admin-dashboard" || url.pathname.startsWith("/coordinator-dashboard"),
+      )
+    ) {
+      return NextResponse.redirect(new URL("/", req.url));
+    }
+
+    if (eventCoordinator && url.pathname.startsWith("/coordinator-dashboard")) {
+      const eventId = url.pathname.split("/")[2];
+      if (eventId != undefined) {
+        if (userRoles.data?.find((role: any) => role.event_id === eventId)) {
+          return NextResponse.next();
+        } else {
+          return NextResponse.redirect(new URL("/", req.url));
+        }
+      } else {
+        return NextResponse.next();
+      }
+    }
+
+    if (volunteer && url.pathname.startsWith("/coordinator-dashboard")) {
+      const eventId = url.pathname.split("/")[2];
+      if (eventId != undefined) {
+        if (userRoles.data?.find((role: any) => role.event_id === eventId)) {
+          return NextResponse.next();
+        } else {
+          return NextResponse.redirect(new URL("/", req.url));
+        }
+      } else {
+        return NextResponse.next();
+      }
+    }
+    if (convenor && url.pathname.startsWith("/coordinator-dashboard")) {
+      return NextResponse.next();
+    }
+    if (superAdmin && url.pathname.startsWith("/coordinator-dashboard")) {
+      return NextResponse.next();
+    }
+
+    if (
+      !eventCoordinator &&
+      !volunteer &&
+      url.pathname.startsWith("/coordinator-dashboard")
+    ) {
+      return NextResponse.redirect(new URL("/", req.url));
+    }
+
+    return NextResponse.next();
   }
 
-  return res;
+  return NextResponse.next();
 }
 
 export const config = {
